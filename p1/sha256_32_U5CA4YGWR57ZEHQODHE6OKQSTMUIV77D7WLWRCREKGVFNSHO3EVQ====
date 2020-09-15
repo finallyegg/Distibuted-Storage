@@ -1,0 +1,11 @@
+{
+    "Version": 1,
+    "Type": "file",
+    "Name": "blah",
+    "ModTime": "2020-09-05T12:00:30.204882096-04:00",
+    "Mode": 420,
+    "PrevSig": "",
+    "Data": [
+        "sha256_32_T42YQG6KOAADIFPNX3F4EDSWXO4QQOJVQLLS3SL2FNXWJEVCCEEA===="
+    ]
+}
