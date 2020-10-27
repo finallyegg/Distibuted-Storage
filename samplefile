@@ -1,8 +1,7 @@
 package main
 
 import (
-	//. "gitlab.cs.umd.edu/cmsc818eFall20/cmsc818e-keleher/p1/store"
-	. "./store"
+	. "gitlab.cs.umd.edu/cmsc818eFall20/cmsc818e-anvitha/p1/store"
 	"os"
 )
 

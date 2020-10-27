@@ -1,28 +1,64 @@
-# Project 1
+# Key - Value Store with sync function
 
+This project implement a key value store that supports: CRD operation at server plus a sync
 
-Allow three operations
+## Client command
 
-  - put
-  - get
-  - desc
+### put: upload a file/directories from a client to remote server;
 
-# Put file
- #### [usage] ```put <file path>```
- #### [output] ```print top level reciept```
-  - tear down a file with each chunk <= 8192 bytes
-  - generate hash for both reciept and file block
-  - print top - level reciept
+#### usage:
 
-# get file
- #### [usage] ```get <sig> newPath```
- #### [output] ```nil```
- - restore file from hashStore
- 
-# desc file
- #### [usage] ```desc <sig> ```
- #### [output] ```print reciept json string to stderr``` OR   ```print file size to stdout```
+`go run client/client.go put {server address} {file_location}`  
+`output: receipt json`
 
+&nbsp;
 
+### sync: sync server b's data to server a two servers
 
- - restore file
+#### usage:
+
+`go run client/client.go sync {server1 addr} {server2 addr} {Tree Height}`  
+`output: number of data passed in bytes, request and chunk pulled`
+
+&nbsp;
+
+### del: delete a specific sig or all from a server
+
+#### usage:
+
+`go run client/client.go del {server_addr} {sig}`  
+`output: none`
+
+&nbsp;
+
+### info: get info from a server
+
+#### usage:
+
+`go run client/client.go info {server_addr}`  
+`output: server status`
+
+### desc: get file_reciept from a server
+
+#### usage:
+
+`go run client/client.go desc {server_addr} {sig}`  
+`output: file reciept print on screen`
+
+&nbsp;
+
+### get: get a file receipt or raw bytes from server, written in bloblocal folder
+
+#### usage:
+
+`go run client/client.go get {server address} {sig} {new file name}`  
+`output: nothing but generate new recipt in blob folder`
+
+&nbsp;
+
+### getfile: get a file or directory from server, written in bloblocal folder
+
+#### usage:
+
+`go run client/client.go getfile {server address} {sig} {new file name}`  
+`output: nothing but generate new file in blob folder`
