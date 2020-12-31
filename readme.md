@@ -21,6 +21,7 @@
 - ##### saving version metadata in memory 
 
 <hr>
+
 ### How to install? 
 
 - ###### install macfuse 3.11.1
