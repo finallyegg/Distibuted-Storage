@@ -8,6 +8,7 @@
 - Integrated with file system and support versioning with user defined interval [1] (use with macFuse)
 
 <hr>
+
 ### Structure
  #### Client: 
   - ##### mounted on user file system 
