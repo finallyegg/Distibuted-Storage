@@ -1,0 +1,1 @@
+go run ../p4/client/client.go -s localhost:8888 del all

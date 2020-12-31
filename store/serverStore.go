@@ -2,80 +2,176 @@ package store
 
 import (
 	"bytes"
+	"crypto"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base32"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 )
 
-func Serve(servAddr string, sqlPath string) {
+var (
+	publicKeyPath                       = ""    // publicKey path
+	requiredAnchorSigned                = false // is signed anchor required?
+	publicKey            *rsa.PublicKey = nil
+	dbPath                              = ""
+)
+
+// verify take a file sig and verify if it signed by same public key
+func verify(fileContent []byte, signedSigature string) bool {
+	if publicKey == nil {
+		return true
+	}
+
+	fileContentString := string(fileContent)
+	fileContentString = strings.TrimSpace(fileContentString)
+
+	// extract "true content for hash function"
+	ind := strings.Index(fileContentString, `"signature"`)
+	fileContentString = fileContentString[:ind-2]
+	s256 := sha256.Sum256([]byte(fileContentString))
+
+	signatureed, _ := base32.StdEncoding.DecodeString(signedSigature)
+	err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, s256[:], signatureed)
+	if err != nil {
+		return false
+	}
+	return true
+}
+
+func Serve(servAddr string, sqlPath string, pk string, anchorSigned bool) {
+	publicKeyPath = pk
+	requiredAnchorSigned = anchorSigned
+	dbPath = sqlPath
+	if publicKeyPath != "" {
+		// if we found public Key, then update the global public key var
+		publicKeyByte, _ := ioutil.ReadFile(publicKeyPath)
+		var publicKeyBlock *pem.Block
+		publicKeyBlock, _ = pem.Decode(publicKeyByte)
+		publicKey, _ = x509.ParsePKCS1PublicKey(publicKeyBlock.Bytes)
+	}
 	treeMap := make(map[string]map[string]*TreeNode)
 	anchorMap := make(map[string]string)
 	chainMap := make(map[string][]string)
+	timeMap := make(map[string]string)
+	nodeMap := make(map[uint64][]string)
 
-	CreateDB(sqlPath) // init DB
+	CreateDB(dbPath) // init DB
 	http.HandleFunc("/json", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := ioutil.ReadAll(r.Body)
-		var example = Message{}
-		err := json.Unmarshal(body, &example)
+		var reqMsg = Message{}
+		err := json.Unmarshal(body, &reqMsg)
 		if err != nil {
 			http.Error(w, "Bad Request", http.StatusBadRequest)
 		}
-		switch example.Type {
+		switch reqMsg.Type {
+
+		// case "sign":
+		// 	fileRcpRaw := reqMsg.Data
+		// 	signedSig := reqMsg.Refsig
+		// 	if !verify(fileRcpRaw, signedSig) {
+		// 		http.Error(w, "Signature failed", http.StatusBadRequest)
+		// 		break
+		// 	}
+		// 	updateFileDB(dbPath, reqMsg.Sig, fileRcpRaw)
+		// 	respMsg := Message{Version: 1, Type: "signresp", Sig: reqMsg.Sig}
+		// 	w.Header().Set("Content-Type", "application/json")
+		// 	json.NewEncoder(w).Encode(respMsg)
+
 		case "anchor":
-			anchorName := example.Name
-			receiptHash := "sha256_32_" + example.RandomID
-			var op map[string]interface{}
-			json.Unmarshal(body, &op)
-			anchorByte, _ := json.MarshalIndent(op, "", "    ")
-			InsertIntoDB(sqlPath, receiptHash, anchorByte)
+			anchorName := reqMsg.Name
+			sh := sha256.Sum256(reqMsg.Data)
+			receiptHash := "sha256_32_" + base32.StdEncoding.EncodeToString(sh[:])
+			if requiredAnchorSigned {
+				// if anchor has no sig
+				if reqMsg.Refsig == "" || !verify(reqMsg.Data, reqMsg.Refsig) {
+					http.Error(w, "Signature failed", http.StatusBadRequest)
+					break
+				}
+			}
+			if publicKey != nil && reqMsg.Refsig != "" {
+				if !verify(reqMsg.Data, reqMsg.Refsig) {
+					http.Error(w, "Signature failed", http.StatusBadRequest)
+					break
+				}
+			}
+			InsertIntoDB(sqlPath, receiptHash, reqMsg.Data)
 
 			anchorMap[anchorName] = receiptHash
+			chainMap[anchorName] = append(chainMap[anchorName], receiptHash)
+
 			msg := Message{Version: 1, Type: "anchorresp", Sig: receiptHash}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(msg)
+		case "claimHead":
 
-		case "updateAnchor":
-			anchorName := example.Name
-			anchorMap[anchorName] = example.Sig
-			msg := Message{Version: 1, Type: "anchorresp", Sig: example.Sig}
+			nodeBuf := DNode2{}
+			json.Unmarshal(reqMsg.Data, &nodeBuf)
+
+			anchorName := "HEAD"
+			sh := sha256.Sum256(reqMsg.Data)
+			receiptHash := "sha256_32_" + base32.StdEncoding.EncodeToString(sh[:])
+
+			InsertIntoDB(sqlPath, receiptHash, reqMsg.Data)
+			chainMap[anchorName] = append(chainMap[anchorName], receiptHash)
+			timeMap[nodeBuf.Attrs.Mtime.Format("2006-1-2T15:04")] = receiptHash
+
+			msg := Message{Version: 1, Type: "claimresp", Sig: receiptHash}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(msg)
+
+		case "selectClaim":
+			timeString := reqMsg.Info
+			parsedTime, _ := parseLocalTime(timeString)
+			formattedTime := parsedTime.Format("2006-1-2T15:04")
+			headSig, contained := timeMap[formattedTime]
+			fmt.Println(timeMap)
+			if !contained {
+				http.Error(w, "NO SUCH HEAD", http.StatusBadRequest)
+			}
+			msg := Message{Version: 1, Type: "claimresp", Sig: headSig}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(msg)
 
 		case "claim":
-			anchorName := example.Name
-			rootHash, contains := anchorMap[anchorName]
-			if contains {
-				var op map[string]interface{}
-				json.Unmarshal(body, &op)
-				op["Refsig"] = rootHash
-				if op["Adds"] == nil {
-					op["Adds"] = make(map[string]string)
-				}
-				op["Adds"].(map[string]string)[example.RootsigKey] = example.RootsigValue
-				previousArray, contains := chainMap[anchorName]
-				if contains {
-					op["Prevsig"] = previousArray[len(previousArray)-1]
-				} else {
-					op["Prevsig"] = rootHash
-				}
-
-				receiptHash := "sha256_32_" + example.RandomID
-				claimByte, _ := json.MarshalIndent(op, "", "    ")
-				InsertIntoDB(sqlPath, receiptHash, claimByte)
-				chainMap[anchorName] = append(chainMap[anchorName], receiptHash)
-				msg := Message{Version: 1, Type: "claimresp", Sig: receiptHash}
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(msg)
-			} else {
-				http.Error(w, "NO ANCHOR ERROR", http.StatusInternalServerError)
+			anchorName := reqMsg.Name
+			_, contains := anchorMap[anchorName]
+			if !contains {
+				http.Error(w, "NO ANCHOR ERROR", http.StatusBadRequest)
 			}
+			sh := sha256.Sum256(reqMsg.Data)
+			receiptHash := "sha256_32_" + base32.StdEncoding.EncodeToString(sh[:])
+			if requiredAnchorSigned {
+				// if anchor has no sig
+				if reqMsg.Sig == "" || !verify(reqMsg.Data, reqMsg.Sig) {
+					http.Error(w, "Signature failed", http.StatusBadRequest)
+					break
+				}
+			}
+			if publicKey != nil && reqMsg.Sig != "" {
+				if !verify(reqMsg.Data, reqMsg.Sig) {
+					http.Error(w, "Signature failed", http.StatusBadRequest)
+					break
+				}
+			}
+			InsertIntoDB(sqlPath, receiptHash, reqMsg.Data)
+
+			chainMap[anchorName] = append(chainMap[anchorName], receiptHash)
+
+			msg := Message{Version: 1, Type: "claimresp", Sig: receiptHash}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(msg)
 
 		case "content":
-			anchorName := example.Name
+			anchorName := reqMsg.Name
 			rootHashArray, contains := chainMap[anchorName]
 			if contains {
 				rootHash := rootHashArray[len(rootHashArray)-1]
@@ -92,7 +188,7 @@ func Serve(servAddr string, sqlPath string) {
 			}
 
 		case "rootanchor":
-			anchorName := example.Name
+			anchorName := reqMsg.Name
 			rootHash, contains := anchorMap[anchorName]
 			if contains {
 				var msg Message
@@ -104,7 +200,7 @@ func Serve(servAddr string, sqlPath string) {
 			}
 
 		case "lastclaim":
-			anchorName := example.Name
+			anchorName := reqMsg.Name
 			rootHashArray, contains := chainMap[anchorName]
 			if contains {
 				rootHash := rootHashArray[len(rootHashArray)-1]
@@ -117,7 +213,7 @@ func Serve(servAddr string, sqlPath string) {
 			}
 
 		case "chain":
-			anchorName := example.Name
+			anchorName := reqMsg.Name
 			rootHashArray, contains := chainMap[anchorName]
 			if contains {
 				var msg Message
@@ -135,8 +231,24 @@ func Serve(servAddr string, sqlPath string) {
 				http.Error(w, "NO ANCHOR ERROR", http.StatusInternalServerError)
 			}
 
+		case "putDNode":
+			data := reqMsg.Data
+			sh := sha256.Sum256(data)
+			receiptHash := "sha256_32_" + base32.StdEncoding.EncodeToString(sh[:])
+			InsertIntoDB(sqlPath, receiptHash, data)
+
+			nodeBuf := DNode2{}
+			json.Unmarshal(data, &nodeBuf)
+			Inode := nodeBuf.Attrs.Inode
+			nodeMap[Inode] = append(nodeMap[Inode], receiptHash)
+
+			msg := Message{Version: 1, Type: "putDNoderesp", Sig: receiptHash}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(msg)
+
 		case "put":
-			data := example.Data
+
+			data := reqMsg.Data
 			sh := sha256.Sum256(data)
 			receiptHash := "sha256_32_" + base32.StdEncoding.EncodeToString(sh[:])
 			InsertIntoDB(sqlPath, receiptHash, data)
@@ -144,8 +256,25 @@ func Serve(servAddr string, sqlPath string) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(msg)
 
+		case "getAllVersions":
+			inode, err := strconv.ParseUint(reqMsg.Name, 10, 64)
+			if err != nil {
+				fmt.Println("NOT VALID U64 INT")
+			}
+			sigs, contained := nodeMap[inode]
+			respMsg := Message{}
+			if contained {
+				respMsg.Chain = make([]string, len(sigs))
+			} else {
+				fmt.Println("NOT FOUND", inode)
+				respMsg.Chain = make([]string, 0)
+			}
+			copy(respMsg.Chain, sigs)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(respMsg)
+
 		case "get":
-			sig := example.Sig
+			sig := reqMsg.Sig
 			data, err := GetFromDB(sqlPath, sig)
 			if err != nil {
 				http.Error(w, "GET DB ERROR", http.StatusInternalServerError)
@@ -156,7 +285,7 @@ func Serve(servAddr string, sqlPath string) {
 
 		case "delete":
 			treeMap = make(map[string]map[string]*TreeNode)
-			sig := example.Sig
+			sig := reqMsg.Sig
 			err := DelFromDB(sqlPath, sig)
 			if err != nil {
 				http.Error(w, "DEL ERROR", http.StatusInternalServerError)
@@ -166,7 +295,7 @@ func Serve(servAddr string, sqlPath string) {
 			json.NewEncoder(w).Encode(msg)
 
 		case "getfile":
-			sig := example.Sig
+			sig := reqMsg.Sig
 			data, err := GetFromDB(sqlPath, sig)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -205,8 +334,8 @@ func Serve(servAddr string, sqlPath string) {
 			json.NewEncoder(w).Encode(msg)
 
 		case "sync":
-			height := example.TreeHeight
-			s2 := example.TreeTarget
+			height := reqMsg.TreeHeight
+			s2 := reqMsg.TreeTarget
 			totalSize := 0
 			totalRequest := 0
 			totalChunk := 0
@@ -245,8 +374,8 @@ func Serve(servAddr string, sqlPath string) {
 
 		case "tree":
 			// step 2
-			if example.TreeSig == "" {
-				height := example.TreeHeight
+			if reqMsg.TreeSig == "" {
+				height := reqMsg.TreeHeight
 				root := TreeNode{}
 				ConstructTree(&root, 1, height) //Construct empty tree
 				treeMap[root.Sig] = FillTree(sqlPath, &root, height)
@@ -254,14 +383,14 @@ func Serve(servAddr string, sqlPath string) {
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(msg)
 			} else {
-				targetSig := example.TreeSig
-				node := treeMap[targetSig][example.Sig]
+				targetSig := reqMsg.TreeSig
+				node := treeMap[targetSig][reqMsg.Sig]
 				msg := Message{Version: 1, Type: "treeresp", Node: node}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(msg)
 			}
 			// case "updateReciept":
-			// 	sig := example.Sig
+			// 	sig := reqMsg.Sig
 			// 	data := example.Data
 			// 	updateFileDB(sqlPath, sig, data)
 			// 	msg := Message{Version: 1, Type: "updateRecieptresp", Node: node}
@@ -374,4 +503,8 @@ func compareNode(s2RootSig string, s1Node *TreeNode, s2Node *TreeNode, s2Addr st
 		}
 	}
 
+}
+func parseLocalTime(tm string) (time.Time, error) {
+	loc, _ := time.LoadLocation("America/New_York")
+	return time.ParseInLocation("2006-1-2T15:04", tm, loc)
 }

@@ -24,7 +24,7 @@ func CreateDB(path string) {
 		PrintExit("SELECT DB error: %v\n", err)
 	}
 	defer rows.Close()
-
+	defer db.Close()
 	sigs := 0
 	totalSz := 0
 
@@ -43,6 +43,7 @@ func InsertIntoDB(path string, sig string, data []byte) {
 	if db, err = sql.Open("sqlite3", path); err != nil {
 		PrintExit("Open DB %q error: %v\n", path, err)
 	}
+	defer db.Close()
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -71,7 +72,7 @@ func updateFileDB(path string, sig string, data []byte) {
 	if db, err = sql.Open("sqlite3", path); err != nil {
 		PrintExit("Open DB %q error: %v\n", path, err)
 	}
-
+	defer db.Close()
 	tx, err := db.Begin()
 	if err != nil {
 		log.Fatal(err)
@@ -92,6 +93,7 @@ func updateFileDB(path string, sig string, data []byte) {
 		PrintExit("UPDATE - COMMIT DB error: %v\n", err)
 	}
 	stmt.Close() //runs here!
+	defer db.Close()
 }
 
 func DelFromDB(path string, sig string) error {
@@ -135,8 +137,8 @@ func DelFromDB(path string, sig string) error {
 		PrintExit("del - COMMIT DB error: %v\n", err)
 
 	}
-
 	return err
+
 }
 
 func GetAllFromDB(path string) []string {
@@ -167,7 +169,7 @@ func GetFromDB(path string, sig string) ([]byte, error) {
 	if db, err = sql.Open("sqlite3", path); err != nil {
 		PrintExit("Open DB %q error: %v\n", path, err)
 	}
-
+	defer db.Close()
 	rows, err := db.Query("SELECT sig, data FROM chunks WHERE sig = ? ", sig)
 	if err != nil {
 		PrintExit("SELECT DB error: %v\n", err)
@@ -184,6 +186,7 @@ func GetFromDB(path string, sig string) ([]byte, error) {
 		}
 		return data, nil
 	}
+
 	return nil, nil
 }
 
@@ -191,7 +194,7 @@ func InfoDB(path string) (string, error) {
 	if db, err = sql.Open("sqlite3", path); err != nil {
 		PrintExit("Open DB %q error: %v\n", path, err)
 	}
-
+	defer db.Close()
 	rows, err := db.Query("SELECT sig, LENGTH(data) FROM chunks")
 	if err != nil {
 		PrintExit("INFO DB error: %v\n", err)
